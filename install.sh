@@ -16,13 +16,8 @@
 # =============================================================================
 set -euo pipefail
 
-INSTANCE_NAME="${1:-prod}"
+INSTANCE_NAME="${1:-}"
 REPO="victorblanco-tech/ai-assistant"
-# Voor prod = main branch (stable), voor test/dev = dev branch
-case "$INSTANCE_NAME" in
-  dev|test) BRANCH="dev" ;;
-  prod|*)   BRANCH="main" ;;
-esac
 
 # Colors
 if [ -t 1 ]; then
@@ -32,9 +27,40 @@ else
 fi
 
 echo
-echo "${B}╔═════════════════════════════╗${N}"
+echo "${B}╔══════════════════════════════════╗${N}"
 echo "${B}║   VB Tech Platform — Installer   ║${N}"
-echo "${B}╚═════════════════════════════╝${N}"
+echo "${B}╚══════════════════════════════════╝${N}"
+echo
+
+# --- Instance-keuze: prompt als geen arg, anders gebruik arg ---
+if [ -z "$INSTANCE_NAME" ]; then
+  if [ ! -e /dev/tty ]; then
+    # Geen TTY = fallback naar prod (bv. CI-pipeline)
+    INSTANCE_NAME="prod"
+  else
+    echo "Welke omgeving wil je installeren?"
+    echo "  ${B}1${N}) ${B}prod${N}  — main branch, voor klanten / eigen productie"
+    echo "  ${B}2${N}) ${B}test${N}  — dev branch, voor release-testing"
+    echo "  ${B}3${N}) ${B}dev${N}   — dev branch, voor ontwikkeling"
+    echo
+    printf "  Keuze [1]: "
+    read -r choice </dev/tty
+    case "${choice:-1}" in
+      1|prod) INSTANCE_NAME="prod" ;;
+      2|test) INSTANCE_NAME="test" ;;
+      3|dev)  INSTANCE_NAME="dev"  ;;
+      *)      echo "${R}✗${N} Ongeldige keuze: $choice" >&2; exit 2 ;;
+    esac
+    echo
+  fi
+fi
+
+# Voor prod = main branch (stable), voor test/dev = dev branch
+case "$INSTANCE_NAME" in
+  dev|test) BRANCH="dev" ;;
+  prod|*)   BRANCH="main" ;;
+esac
+
 echo "  Instance: ${B}$INSTANCE_NAME${N} (branch: $BRANCH)"
 echo
 
