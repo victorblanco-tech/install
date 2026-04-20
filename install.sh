@@ -19,9 +19,15 @@ set -euo pipefail
 INSTANCE_NAME="${1:-}"
 REPO="victorblanco-tech/ai-assistant"
 
-# Colors
+# Colors — Claude-style warm palet (truecolor, fallback 256-color-safe)
+#   B = accent (Claude oranje #D97757) voor headers, highlights
+#   G = groen (success), Y = amber (warn), R = rood (error)
 if [ -t 1 ]; then
-  G=$'\033[0;32m'; Y=$'\033[0;33m'; R=$'\033[0;31m'; B=$'\033[0;34m'; N=$'\033[0m'
+  B=$'\033[38;2;217;119;87m'   # Claude oranje
+  G=$'\033[38;2;99;178;115m'   # zacht groen
+  Y=$'\033[38;2;230;168;0m'    # amber warn
+  R=$'\033[38;2;232;86;86m'    # zacht rood
+  N=$'\033[0m'
 else
   G=""; Y=""; R=""; B=""; N=""
 fi
