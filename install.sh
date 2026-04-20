@@ -16,6 +16,9 @@
 # =============================================================================
 set -euo pipefail
 
+# Installer eigen versie (bump bij wijziging aan install.sh / bootstrap-logic)
+INSTALLER_VERSION="1.1.0"
+
 INSTANCE_NAME="${1:-}"
 REPO="victorblanco-tech/ai-assistant"
 
@@ -36,6 +39,7 @@ echo
 echo "${B}╔══════════════════════════════════╗${N}"
 echo "${B}║   VB Tech Platform — Installer   ║${N}"
 echo "${B}╚══════════════════════════════════╝${N}"
+echo "  Installer versie: ${B}${INSTALLER_VERSION}${N}"
 echo
 
 # --- Instance-keuze: prompt als geen arg, anders gebruik arg ---
