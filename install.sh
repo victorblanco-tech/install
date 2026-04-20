@@ -92,7 +92,8 @@ fi
 # Download setup.sh uit private repo met token
 echo
 echo "${B}▸${N} Download setup.sh van ${REPO} (branch: ${BRANCH})"
-TMPFILE=$(mktemp /tmp/vbtech-setup.XXXXXX.sh)
+# BSD mktemp (macOS) wil X's aan het einde — GNU mktemp accepteert anywhere
+TMPFILE=$(mktemp -t vbtech-setup)
 trap "rm -f $TMPFILE" EXIT
 
 if ! curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
