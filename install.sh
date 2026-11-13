@@ -1,114 +1,183 @@
 #!/usr/bin/env bash
-# =============================================================================
-# VB Tech Platform — Bootstrap installer
-#
-# Publieke stub die de private repo clonet en setup.sh erbinnen uitvoert.
-# Wordt gehost op: https://github.com/victorblanco-tech/install
-#
-# Gebruik:
-#   curl -fsSL https://raw.githubusercontent.com/victorblanco-tech/install/main/install.sh | bash
-#
-# Optioneel: instance-naam meegeven (default: prod):
-#   curl -fsSL https://... | bash -s -- test
-#
-# Optioneel: token als env-var (geen prompt):
-#   GITHUB_TOKEN=xxx curl -fsSL https://... | bash
-# =============================================================================
+# Public bootstrap. Platform source remains in the authorized private repository.
+set +x
 set -euo pipefail
+umask 077
 
-# Installer eigen versie (bump bij wijziging aan install.sh / bootstrap-logic)
-INSTALLER_VERSION="1.1.0"
-
-INSTANCE_NAME="${1:-}"
+main() {
+TOKEN="${GITHUB_TOKEN:-}"
+unset GITHUB_TOKEN
+INSTALLER_VERSION="1.2.0"
+PLATFORM_REF="v0.26.1"
 REPO="victorblanco-tech/ai-assistant"
+INSTANCE_NAME="prod"
+OWNER=""
+CHECK_ONLY=0
+SYSTEM_ARGS=()
+INSTANCE_SET=0
+STAGING=""
 
-# Colors — 256-color palet (universele support ipv truecolor)
-#   B = accent (ANSI 208 — warme oranje, Claude-style)
-#   G = groen (success), Y = amber (warn), R = rood (error)
-if [ -t 1 ]; then
-  B=$'\033[38;5;208m'   # warme oranje (208 in 256-color)
-  G=$'\033[38;5;42m'    # groen
-  Y=$'\033[38;5;214m'   # amber/gold
-  R=$'\033[38;5;203m'   # zacht rood
-  N=$'\033[0m'
-else
-  G=""; Y=""; R=""; B=""; N=""
+fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+usage() {
+  printf '%s\n' \
+    'VB Tech installer 1.2.0 (macOS, fresh installations only)' \
+    'Usage: bash install.sh [INSTANCE] [--check] [--ref=vX.Y.Z|40-character-commit]' \
+    '       [--owner-email=EMAIL] [--system-env=PUBLIC_KEY=value] ...' \
+    'Default: prod, platform v0.26.1. Instance names do not select a development branch.' \
+    '--check only checks local prerequisites; no downloads or changes.' \
+    'GitHub token: silent terminal prompt, or inherited GITHUB_TOKEN.' \
+    'Existing instances are never overwritten; use their supported updater.'
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h) usage; exit 0 ;;
+    --check) CHECK_ONLY=1 ;;
+    --ref=*) PLATFORM_REF="${arg#*=}" ;;
+    --owner-email=*) OWNER="${arg#*=}" ;;
+    --system-env=*) SYSTEM_ARGS+=("$arg") ;;
+    -*) fail "Unknown option (use --help)" ;;
+    *) [ "$INSTANCE_SET" = 0 ] || fail "Only one instance name is allowed"
+       INSTANCE_NAME="$arg"; INSTANCE_SET=1 ;;
+  esac
+done
+[[ "$INSTANCE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail "Invalid instance name"
+[[ "$PLATFORM_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$PLATFORM_REF" =~ ^[0-9a-f]{40}$ ]] \
+  || fail "Select a stable tag or full commit, not a moving branch"
+[ "$(uname -s)" = Darwin ] || fail "This installer supports macOS only"
+[ "$(id -u)" != 0 ] || fail "Run as your normal user, not sudo/root"
+for tool in git python3 node docker; do
+  command -v "$tool" >/dev/null || fail "Missing prerequisite: $tool"
+done
+node -e 'if(Number(process.versions.node.split(".")[0])<22)process.exit(1)' \
+  || fail "Node.js 22 or newer is required"
+docker info >/dev/null 2>&1 || fail "Start Docker Desktop first"
+docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
+
+VB_ROOT="${VB_ROOT:-$HOME/vb-tech}"
+export VB_ROOT
+INSTANCE_DIR="$VB_ROOT/instances/$INSTANCE_NAME"
+# Reject ambiguous destinations, including symlinked parents, before mkdir/clone.
+python3 - "$VB_ROOT" "$INSTANCE_DIR" <<'PY'
+import os, pathlib, sys
+root, target = map(pathlib.Path, sys.argv[1:])
+if not root.is_absolute() or '..' in root.parts or root == pathlib.Path('/'):
+    sys.exit('Unsafe installation root')
+if any(p.is_symlink() for p in [target, *target.parents]):
+    sys.exit('Symlinked installation paths are not supported')
+if os.path.lexists(target):
+    sys.exit('Instance already exists; use its supported updater, not this installer')
+PY
+printf 'Installer %s | Platform %s | Target %s\n' "$INSTALLER_VERSION" "$PLATFORM_REF" "$INSTANCE_DIR"
+if [ "$CHECK_ONLY" = 1 ]; then
+  printf 'Local prerequisites OK. Credentials and external services were not tested.\n'
+  exit 0
 fi
 
-echo
-echo "${B}╔══════════════════════════════════╗${N}"
-echo "${B}║   VB Tech Platform — Installer   ║${N}"
-echo "${B}╚══════════════════════════════════╝${N}"
-echo "  Installer versie: ${B}${INSTALLER_VERSION}${N}"
-echo
+if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+  fail "An interactive terminal is required. Use --check for read-only preflight."
+fi
+prompt() {
+  printf '%s: ' "$1" >&3
+  IFS= read -r REPLY <&3 || fail "Terminal input ended"
+  [ -n "$REPLY" ] || fail "A value is required"
+}
+if [ -z "$OWNER" ]; then prompt 'Initial owner email'; OWNER="$REPLY"; fi
 
-# --- Instance-keuze: prompt als geen arg, anders gebruik arg ---
-if [ -z "$INSTANCE_NAME" ]; then
-  if [ ! -e /dev/tty ]; then
-    # Geen TTY = fallback naar prod (bv. CI-pipeline)
-    INSTANCE_NAME="prod"
-  else
-    echo "Welke omgeving wil je installeren?"
-    echo "  ${B}1${N}) ${B}prod${N}  — main branch, voor klanten / eigen productie"
-    echo "  ${B}2${N}) ${B}test${N}  — dev branch, voor release-testing"
-    echo "  ${B}3${N}) ${B}dev${N}   — dev branch, voor ontwikkeling"
-    echo
-    printf "  Keuze [1]: "
-    read -r choice </dev/tty
-    case "${choice:-1}" in
-      1|prod) INSTANCE_NAME="prod" ;;
-      2|test) INSTANCE_NAME="test" ;;
-      3|dev)  INSTANCE_NAME="dev"  ;;
-      *)      echo "${R}✗${N} Ongeldige keuze: $choice" >&2; exit 2 ;;
-    esac
-    echo
+need_setting() {
+  local key="$1" label="$2" entry
+  for entry in ${SYSTEM_ARGS[@]+"${SYSTEM_ARGS[@]}"}; do
+    case "$entry" in "--system-env=$key="*) return ;; esac
+  done
+  prompt "$label"
+  SYSTEM_ARGS+=("--system-env=$key=$REPLY")
+}
+for prefix in MC PROJECTS KNOWLEDGE_SEARCH; do
+  need_setting "${prefix}_ACCESS_TEAM_DOMAIN" "$prefix Cloudflare Access team domain (team.cloudflareaccess.com)"
+  need_setting "${prefix}_ACCESS_AUDIENCE" "$prefix Access application audience (AUD)"
+  need_setting "${prefix}_PUBLIC_ORIGIN" "$prefix HTTPS origin (without trailing slash)"
+done
+need_setting CRM_ACCESS_AUDIENCE 'CRM allowed audiences (include MC and Projects AUDs, comma-separated)'
+
+printf '\nThis downloads authorized private source and runs its setup.\n' >&3
+printf 'Setup builds/starts containers and asks for service credentials.\n' >&3
+printf 'Use an expiring GitHub token scoped to this repository: Contents read only.\n' >&3
+printf 'The bootstrap token is not saved or passed to the platform setup.\n' >&3
+prompt 'Type INSTALL to continue'
+[ "$REPLY" = INSTALL ] || fail "Cancelled; no files changed"
+if [ -z "$TOKEN" ]; then
+  printf 'GitHub token (hidden): ' >&3
+  IFS= read -rs TOKEN <&3 || fail "Token input ended"
+  printf '\n' >&3
+fi
+[[ "$TOKEN" =~ ^[A-Za-z0-9_]+$ ]] || fail "Invalid or empty GitHub token"
+
+cleanup() { [ -z "$STAGING" ] || rm -rf -- "$STAGING"; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+mkdir -p "$VB_ROOT/instances"
+STAGING=$(mktemp -d "$VB_ROOT/instances/.bootstrap.XXXXXXXX")
+
+# Secret exists only in the Git child environment, never argv or the remote URL.
+credential_helper='!f() { if [ "$1" = get ]; then
+  protocol= host= path=
+  while IFS="=" read -r key value; do
+    case "$key" in protocol) protocol=$value;; host) host=$value;; path) path=$value;; esac
+  done
+  if [ "$protocol" = https ] && [ "$host" = github.com ] && [ "$path" = victorblanco-tech/ai-assistant.git ]; then
+    printf "username=x-access-token\npassword=%s\n" "$GITHUB_TOKEN"
   fi
-fi
+fi; }; f'
+auth_git() {
+  GITHUB_TOKEN="$TOKEN" GIT_TERMINAL_PROMPT=0 GIT_TRACE=0 GIT_TRACE_CURL=0 GIT_CURL_VERBOSE=0 \
+    git -c credential.helper= -c credential.useHttpPath=true \
+    -c "credential.helper=$credential_helper" -c http.followRedirects=false \
+    -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 "$@"
+}
+git init -q "$STAGING/source"
+git -C "$STAGING/source" remote add origin "https://github.com/$REPO.git"
+case "$PLATFORM_REF" in v*) FETCH_REF="refs/tags/$PLATFORM_REF" ;; *) FETCH_REF="$PLATFORM_REF" ;; esac
+printf 'Fetching platform source...\n'
+auth_git -C "$STAGING/source" fetch --quiet --depth=1 origin "$FETCH_REF" \
+  || fail "Source access failed. Check token permissions, expiry and selected release."
+COMMIT=$(git -C "$STAGING/source" rev-parse 'FETCH_HEAD^{commit}')
+git -C "$STAGING/source" checkout --quiet --detach "$COMMIT"
+unset TOKEN
+[ -f "$STAGING/source/setup.sh" ] && [ ! -L "$STAGING/source/setup.sh" ] || fail "Release has no regular setup.sh"
+grep -q -- '--bootstrap-commit=' "$STAGING/source/setup.sh" || fail "This release does not support the fresh bootstrap contract"
 
-# Voor prod = main branch (stable), voor test/dev = dev branch
-case "$INSTANCE_NAME" in
-  dev|test) BRANCH="dev" ;;
-  prod|*)   BRANCH="main" ;;
-esac
+# Use the selected release's own validator; do not duplicate its access rules.
+node - "$STAGING/source" "$OWNER" ${SYSTEM_ARGS[@]+"${SYSTEM_ARGS[@]}"} <<'JS'
+const path = require('node:path');
+const [root, owner, ...args] = process.argv.slice(2);
+const { validateFreshIdentity, publicKeys } = require(path.join(root, 'containers/app-system/ops/provision-environment.cjs'));
+const values = {};
+for (const prefix of ['MC', 'PROJECTS', 'KNOWLEDGE_SEARCH']) {
+  values[prefix === 'MC' ? 'MC_BOOTSTRAP_OWNER_EMAIL' : `${prefix}_OWNER_EMAILS`] = owner;
+}
+for (const arg of args) {
+  const assignment = arg.slice('--system-env='.length), equal = assignment.indexOf('=');
+  const key = assignment.slice(0, equal), value = assignment.slice(equal + 1);
+  if (equal < 1 || !publicKeys.includes(key) || Object.hasOwn(values, key) || /[\r\n\0"'`$\\]/.test(value)) {
+    throw new Error('Invalid, duplicate or unsupported public system setting');
+  }
+  values[key] = value;
+}
+validateFreshIdentity(values);
+JS
 
-echo "  Instance: ${B}$INSTANCE_NAME${N} (branch: $BRANCH)"
-echo
+python3 - "$STAGING/source" "$INSTANCE_DIR" <<'PY'
+import os, sys
+source, target = sys.argv[1:]
+if os.path.lexists(target):
+    sys.exit('Destination appeared during preparation; refusing overwrite')
+os.rename(source, target)
+PY
+printf 'Selected platform commit: %s\n' "$COMMIT"
+printf 'If setup fails, the prepared checkout stays in %s for inspection.\n' "$INSTANCE_DIR"
+bash "$INSTANCE_DIR/setup.sh" "$INSTANCE_NAME" "--bootstrap-commit=$COMMIT" \
+  --initialize-fresh-app-system "--system-owner-email=$OWNER" ${SYSTEM_ARGS[@]+"${SYSTEM_ARGS[@]}"}
+}
 
-# Preflight
-command -v git >/dev/null  || { echo "${R}✗${N} git niet geinstalleerd" >&2; exit 1; }
-command -v curl >/dev/null || { echo "${R}✗${N} curl niet geinstalleerd" >&2; exit 1; }
-
-# Token: uit env OF interactief
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-  if [ ! -e /dev/tty ]; then
-    echo "${R}✗${N} GITHUB_TOKEN vereist (geen TTY voor prompt)" >&2
-    echo "   Gebruik: GITHUB_TOKEN=xxx curl ... | bash" >&2
-    exit 1
-  fi
-  echo "${Y}!${N} Private repo — GitHub token nodig (krijg je van Victor)"
-  echo "   Format: github_pat_xxx..."
-  printf "   Token: "
-  read -r GITHUB_TOKEN </dev/tty
-fi
-
-[ -z "$GITHUB_TOKEN" ] && { echo "${R}✗${N} Token vereist" >&2; exit 1; }
-
-# Download setup.sh uit private repo met token
-echo
-echo "${B}▸${N} Download setup.sh van ${REPO} (branch: ${BRANCH})"
-# BSD mktemp (macOS) wil X's aan het einde — GNU mktemp accepteert anywhere
-TMPFILE=$(mktemp -t vbtech-setup)
-trap "rm -f $TMPFILE" EXIT
-
-if ! curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
-     "https://raw.githubusercontent.com/${REPO}/${BRANCH}/setup.sh" -o "$TMPFILE"; then
-  echo "${R}✗${N} Download gefaald. Token ongeldig of geen repo-toegang?" >&2
-  exit 1
-fi
-
-chmod +x "$TMPFILE"
-echo "${G}✓${N} Download OK ($(wc -l < "$TMPFILE") regels)"
-
-# Run setup.sh — GITHUB_TOKEN via env zodat setup.sh de clone kan doen
-echo
-exec env GITHUB_TOKEN="$GITHUB_TOKEN" bash "$TMPFILE" "$INSTANCE_NAME"
+main "$@"

@@ -1,0 +1,28 @@
+name: Installer checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  bootstrap:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bash syntax
+        run: /bin/bash -n install.sh
+      - name: Offline integration tests (no credentials or running services)
+        run: python3 -m unittest discover -s tests -v
+      - name: ShellCheck
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck --severity=warning install.sh
