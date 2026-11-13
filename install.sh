@@ -7,8 +7,9 @@ umask 077
 main() {
 TOKEN="${GITHUB_TOKEN:-}"
 unset GITHUB_TOKEN
-INSTALLER_VERSION="1.2.1"
+INSTALLER_VERSION="1.2.2"
 PLATFORM_REF="v0.26.1"
+REF_SET=0
 REPO="victorblanco-tech/ai-assistant"
 INSTANCE_NAME="prod"
 OWNER=""
@@ -17,21 +18,23 @@ SYSTEM_ARGS=()
 INSTANCE_SET=0
 STAGING=""
 
-printf '\n'
-printf '%s\n' \
-  '+--------------------------------------+' \
-  '|          VB TECH PLATFORM             |' \
-  '|              Installer               |' \
-  '+--------------------------------------+'
-printf '  Installer %s\n\n' "$INSTALLER_VERSION"
+B=""; G=""; Y=""; N=""
+if [ -t 1 ]; then
+  B=$'\033[38;5;208m'; G=$'\033[38;5;42m'; Y=$'\033[38;5;214m'; N=$'\033[0m'
+fi
+printf '\n%s╔══════════════════════════════════╗\n' "$B"
+printf '║   VB Tech Platform — Installer   ║\n'
+printf '╚══════════════════════════════════╝%s\n' "$N"
+printf '  Installer versie: %s%s%s\n\n' "$B" "$INSTALLER_VERSION" "$N"
 
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 usage() {
   printf '%s\n' \
-    'VB Tech installer 1.2.1 (macOS, fresh installations only)' \
+    'VB Tech installer 1.2.2 (macOS, fresh installations only)' \
     'Usage: bash install.sh [INSTANCE] [--check] [--ref=vX.Y.Z|40-character-commit]' \
     '       [--owner-email=EMAIL] [--system-env=PUBLIC_KEY=value] ...' \
-    'Default: prod, platform v0.26.1. Instance names do not select a development branch.' \
+    'Interactive environment menu: prod uses v0.26.1; test/dev use the dev branch.' \
+    'The selected source is resolved once to an exact commit before setup.' \
     '--check only checks local prerequisites; no downloads or changes.' \
     'GitHub token: silent terminal prompt, or inherited GITHUB_TOKEN.' \
     'Existing instances are never overwritten; use their supported updater.'
@@ -41,7 +44,7 @@ for arg in "$@"; do
   case "$arg" in
     --help|-h) usage; exit 0 ;;
     --check) CHECK_ONLY=1 ;;
-    --ref=*) PLATFORM_REF="${arg#*=}" ;;
+    --ref=*) PLATFORM_REF="${arg#*=}"; REF_SET=1 ;;
     --owner-email=*) OWNER="${arg#*=}" ;;
     --system-env=*) SYSTEM_ARGS+=("$arg") ;;
     -*) fail "Unknown option (use --help)" ;;
@@ -52,14 +55,42 @@ done
 [[ "$INSTANCE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail "Invalid instance name"
 [[ "$PLATFORM_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$PLATFORM_REF" =~ ^[0-9a-f]{40}$ ]] \
   || fail "Select a stable tag or full commit, not a moving branch"
-printf 'Checking prerequisites...\n'
+if [ "$CHECK_ONLY" = 0 ]; then
+  if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+    fail "An interactive terminal is required. Use --check for read-only preflight."
+  fi
+  if [ "$INSTANCE_SET" = 0 ]; then
+    while :; do
+      printf 'Welke omgeving wil je installeren?\n'
+      printf '  %s1%s) %sprod%s — stabiele platformversie\n' "$B" "$N" "$B" "$N"
+      printf '  %s2%s) %stest%s — dev branch, voor release-testing\n' "$B" "$N" "$B" "$N"
+      printf '  %s3%s) %sdev%s  — dev branch, voor ontwikkeling\n' "$B" "$N" "$B" "$N"
+      printf '  0) Afsluiten\n\n  Keuze [1]: ' >&3
+      IFS= read -r choice <&3 || return 0
+      case "${choice:-1}" in
+        1|prod) INSTANCE_NAME="prod"; break ;;
+        2|test) INSTANCE_NAME="test"; break ;;
+        3|dev) INSTANCE_NAME="dev"; break ;;
+        0|q|Q) return 0 ;;
+        *) printf 'Kies 1, 2, 3 of 0.\n\n' ;;
+      esac
+    done
+  fi
+fi
+if [ "$REF_SET" = 0 ]; then
+  case "$INSTANCE_NAME" in dev|test) PLATFORM_REF=dev ;; esac
+fi
+printf '\n  Omgeving: %s%s%s | Platform: %s\n\n' "$B" "$INSTANCE_NAME" "$N" "$PLATFORM_REF"
+
+check_prerequisites() {
+printf '%s▸ Checking prerequisites...%s\n' "$B" "$N"
 missing=0
-needs() { printf '  [!] %s\n' "$*"; missing=1; }
+needs() { printf '  %s[!]%s %s\n' "$Y" "$N" "$*"; missing=1; }
 [ "$(uname -s)" = Darwin ] || needs "This installer supports macOS only."
 [ "$(id -u)" != 0 ] || needs "Run as your normal user, not sudo/root."
 for tool in git python3 node docker; do
   if command -v "$tool" >/dev/null; then
-    printf '  [OK] %s found\n' "$tool"
+    printf '  %s[OK]%s %s found\n' "$G" "$N" "$tool"
   else
     case "$tool" in
       git) needs "Git missing. Install the Apple Command Line Tools: xcode-select --install" ;;
@@ -78,9 +109,30 @@ if command -v docker >/dev/null; then
   docker compose version >/dev/null 2>&1 || needs "Docker Compose v2 is required. Check your Docker Desktop installation."
 fi
 if [ "$missing" = 1 ]; then
-  printf '\nSetup has not started. Resolve the items above, then run this command again.\n'
+  printf '\nSetup has not started. Resolve the items above, then check again.\n'
   printf 'No files, services or settings have been changed.\n\n'
-  exit 1
+  return 1
+fi
+printf '\n%s[OK] Alle vereisten zijn aanwezig.%s\n\n' "$G" "$N"
+}
+
+if [ "$CHECK_ONLY" = 1 ]; then
+  check_prerequisites || return 1
+else
+  check_label='Start check for pre-req'
+  while :; do
+    printf '  %s1%s) %s\n  0) Afsluiten\n\n' "$B" "$N" "$check_label"
+    printf '  Actie [1]: ' >&3
+    IFS= read -r choice <&3 || return 0
+    case "${choice:-1}" in
+      1)
+        if check_prerequisites; then break; fi
+        check_label='Opnieuw controleren (Start check for pre-req)'
+        ;;
+      0|q|Q) printf 'Installer afgesloten. Er is niets geinstalleerd.\n'; return 0 ;;
+      *) printf 'Kies 1 om te controleren of 0 om af te sluiten.\n\n' ;;
+    esac
+  done
 fi
 
 VB_ROOT="${VB_ROOT:-$HOME/vb-tech}"
@@ -103,9 +155,6 @@ if [ "$CHECK_ONLY" = 1 ]; then
   exit 0
 fi
 
-if ! { exec 3<>/dev/tty; } 2>/dev/null; then
-  fail "An interactive terminal is required. Use --check for read-only preflight."
-fi
 prompt() {
   printf '%s: ' "$1" >&3
   IFS= read -r REPLY <&3 || fail "Terminal input ended"
@@ -166,7 +215,11 @@ auth_git() {
 }
 git init -q "$STAGING/source"
 git -C "$STAGING/source" remote add origin "https://github.com/$REPO.git"
-case "$PLATFORM_REF" in v*) FETCH_REF="refs/tags/$PLATFORM_REF" ;; *) FETCH_REF="$PLATFORM_REF" ;; esac
+case "$PLATFORM_REF" in
+  dev) FETCH_REF=refs/heads/dev ;;
+  v*) FETCH_REF="refs/tags/$PLATFORM_REF" ;;
+  *) FETCH_REF="$PLATFORM_REF" ;;
+esac
 printf 'Fetching platform source...\n'
 auth_git -C "$STAGING/source" fetch --quiet --depth=1 origin "$FETCH_REF" \
   || fail "Source access failed. Check token permissions, expiry and selected release."

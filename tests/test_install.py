@@ -53,6 +53,7 @@ if(!v.CRM_ACCESS_AUDIENCE)throw Error('audience missing');
         self.run_git('-C', str(self.source), 'add', '.')
         self.run_git('-C', str(self.source), 'commit', '-qm', 'fixture')
         self.run_git('-C', str(self.source), 'tag', 'v0.26.1')
+        self.run_git('-C', str(self.source), 'branch', 'dev')
         self.commit = self.run_git('-C', str(self.source), 'rev-parse', 'HEAD').strip()
         wrapper = f'''#!{PYTHON}
 import json, os, pathlib, subprocess, sys, time
@@ -61,7 +62,7 @@ args=sys.argv[1:]
 with open(os.environ['TRACE'],'a') as f:f.write(json.dumps({{'tool':tool,'args':args,'has_token':bool(os.getenv('GITHUB_TOKEN'))}})+'\\n')
 if tool=='uname':print('Darwin');sys.exit(0)
 if tool=='id':print('501');sys.exit(0)
-if tool=='docker':sys.exit(int(os.getenv('DOCKER_RC','0')))
+if tool=='docker':sys.exit(1 if pathlib.Path(os.environ['DOCKER_BLOCK']).exists() else int(os.getenv('DOCKER_RC','0')))
 if tool=='node':os.execv({NODE!r},[{NODE!r},*args])
 if 'fetch' in args:
  if os.getenv('FETCH_SLEEP'):time.sleep(60)
@@ -77,6 +78,7 @@ os.execv({GIT!r},[{GIT!r},*args])
         self.env = {**os.environ, 'PATH': f'{self.bin}:{os.environ["PATH"]}',
                     'VB_ROOT': str(self.root / 'platform'), 'TRACE': str(self.trace),
                     'FIXTURE': str(self.source), 'SETUP_RESULT': str(self.root / 'result.json'),
+                    'DOCKER_BLOCK': str(self.root / 'docker-block'),
                     'GITHUB_TOKEN': FAKE_TOKEN}
         self.args = ['--owner-email=owner@example.test']
         for prefix in ['MC', 'PROJECTS', 'KNOWLEDGE_SEARCH']:
@@ -88,7 +90,8 @@ os.execv({GIT!r},[{GIT!r},*args])
     def run_git(self, *args):
         return subprocess.check_output([GIT, *args], text=True, stderr=subprocess.DEVNULL)
 
-    def invoke(self, extra=(), tty=True, confirmation='INSTALL', env=None, interrupt=False):
+    def invoke(self, extra=(), tty=True, confirmation='INSTALL', env=None, interrupt=False,
+               environment_choice='1', repair=False):
         command = ['/bin/bash', str(SCRIPT), *self.args, *extra]
         environment = {**self.env, **(env or {})}
         if not tty:
@@ -103,6 +106,7 @@ os.execv({GIT!r},[{GIT!r},*args])
                                    stderr=slave, preexec_fn=terminal)
         os.close(slave)
         output, sent, token_sent, killed = b'', False, False, False
+        chosen, action_count = False, 0
         deadline = time.monotonic() + 20
         try:
             while time.monotonic() < deadline:
@@ -114,6 +118,19 @@ os.execv({GIT!r},[{GIT!r},*args])
                 if not sent and b'Type INSTALL to continue: ' in output:
                     os.write(master, (confirmation + '\n').encode())
                     sent = True
+                if not chosen and b'Keuze [1]: ' in output:
+                    os.write(master, (environment_choice + '\n').encode())
+                    chosen = True
+                if output.count(b'Actie [1]: ') > action_count:
+                    if action_count == 0:
+                        response = '1'
+                    elif repair:
+                        (self.root / 'docker-block').unlink(missing_ok=True)
+                        response = '1'
+                    else:
+                        response = '0'
+                    os.write(master, (response + '\n').encode())
+                    action_count += 1
                 if not token_sent and b'GitHub token (hidden): ' in output:
                     time.sleep(.05)
                     os.write(master, (FAKE_TOKEN + '\n').encode())
@@ -201,14 +218,14 @@ os.execv({GIT!r},[{GIT!r},*args])
         self.target.mkdir(parents=True)
         marker = self.target / 'keep'
         marker.write_text('untouched')
-        rc, output = self.invoke(tty=False)
+        rc, output = self.invoke(['--check'], tty=False)
         self.assertNotEqual(rc, 0)
         self.assertIn('already exists', output)
         self.assertEqual(marker.read_text(), 'untouched')
 
     def test_symlink_parent_refused(self):
         (self.root / 'platform').symlink_to(self.source, target_is_directory=True)
-        rc, output = self.invoke(tty=False)
+        rc, output = self.invoke(['--check'], tty=False)
         self.assertNotEqual(rc, 0)
         self.assertIn('Symlinked', output)
         self.assertFalse((self.source / 'instances').exists())
@@ -262,20 +279,20 @@ os.execv({GIT!r},[{GIT!r},*args])
         self.assertEqual(rc, 0, output)
 
     def test_docker_unavailable_no_changes(self):
-        rc, output = self.invoke(tty=False, env={'DOCKER_RC': '1'})
+        rc, output = self.invoke(['--check'], tty=False, env={'DOCKER_RC': '1'})
         self.assertNotEqual(rc, 0)
-        self.assertLess(output.index('VB TECH PLATFORM'), output.index('Docker is not ready'))
+        self.assertLess(output.index('VB Tech Platform'), output.index('Docker is not ready'))
         self.assertIn('Setup has not started', output)
         self.assertFalse((self.root / 'platform').exists())
 
     def test_banner_and_all_missing_tools_before_exit(self):
         (self.bin / 'docker').unlink()
         (self.bin / 'node').unlink()
-        rc, output = self.invoke(tty=False, env={'PATH': str(self.bin)})
+        rc, output = self.invoke(['--check'], tty=False, env={'PATH': str(self.bin)})
         self.assertNotEqual(rc, 0)
         for message in ['Python 3 missing', 'Node.js missing', 'Docker missing']:
             self.assertIn(message, output)
-            self.assertLess(output.index('VB TECH PLATFORM'), output.index(message))
+            self.assertLess(output.index('VB Tech Platform'), output.index(message))
         self.assertIn('https://www.docker.com/products/docker-desktop/', output)
         self.assertIn('No files, services or settings have been changed', output)
         self.assertFalse((self.root / 'platform').exists())
@@ -283,7 +300,41 @@ os.execv({GIT!r},[{GIT!r},*args])
     def test_help_also_starts_with_banner(self):
         rc, output = self.invoke(['--help'], tty=False)
         self.assertEqual(rc, 0)
-        self.assertLess(output.index('VB TECH PLATFORM'), output.index('Usage:'))
+        self.assertLess(output.index('VB Tech Platform'), output.index('Usage:'))
+
+    def test_original_orange_banner_and_menu_order(self):
+        rc, output = self.invoke()
+        self.assertEqual(rc, 0, output)
+        self.assertIn('\x1b[38;5;208m', output)
+        self.assertIn('╔══════════════════════════════════╗', output)
+        labels = ['VB Tech Platform', 'Welke omgeving', 'Start check for pre-req',
+                  'Checking prerequisites', 'Type INSTALL']
+        positions = [output.index(label) for label in labels]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_missing_docker_stays_in_menu_until_user_exits(self):
+        rc, output = self.invoke(env={'DOCKER_RC': '1'})
+        self.assertEqual(rc, 0, output)
+        self.assertIn('Opnieuw controleren', output)
+        self.assertIn('Installer afgesloten', output)
+        self.assertNotIn('Type INSTALL', output)
+        self.assertFalse((self.root / 'platform').exists())
+
+    def test_retry_after_starting_docker_continues_same_session(self):
+        (self.root / 'docker-block').touch()
+        rc, output = self.invoke(repair=True)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(output.count('Checking prerequisites'), 2)
+        self.assertTrue((self.root / 'result.json').is_file())
+
+    def test_test_environment_uses_dev_commit(self):
+        rc, output = self.invoke(environment_choice='2')
+        self.assertEqual(rc, 0, output)
+        result = json.loads((self.root / 'result.json').read_text())
+        self.assertEqual(result['args'][0], 'test')
+        fetch = next(x for x in self.trace_entries() if 'fetch' in x['args'])
+        self.assertIn('refs/heads/dev', fetch['args'])
+        self.assertIn(f'--bootstrap-commit={self.commit}', result['args'])
 
     def test_truncated_script_does_not_execute(self):
         result = subprocess.run(['/bin/bash'], input=SCRIPT.read_text()[:SCRIPT.read_text().rfind('}')],

@@ -34,9 +34,12 @@ bash install-vbtech.sh
 
 `--check` is local and read-only. It does not test repository access, Cloudflare
 or a complete installation. A new destination must not exist yet.
-The installer always opens with its banner, then lists missing prerequisites
-together with next steps. Missing requirements stop setup without changing files
-or services; install them yourself and run the command again.
+The interactive installer opens with the original orange banner and an environment
+menu (prod/test/dev). Select **Start check for pre-req** to run the checks.
+Missing requirements are listed together with next steps. The installer stays
+open: resolve the issue in another window, then choose to check again, or explicitly
+exit. It never starts setup while requirements are missing. `--check` remains a
+one-shot, noninteractive check with a nonzero exit status when requirements fail.
 
 The shorter interactive command is:
 
@@ -50,12 +53,13 @@ and the platform setup can build and start containers. HTTPS is transport securi
 not independent signature verification. Use the installer release tag in place of
 `main` when sharing a versioned command.
 
-The default platform is **v0.26.1**, not moving `main` or `dev`. The bootstrap fetches
-one release, resolves its commit and executes setup from that exact checkout.
+The production platform is **v0.26.1**. Selecting **test** or **dev** uses the dev
+branch, as in the original installer workflow. The bootstrap fetches the selected
+source once, resolves its commit and executes setup from that exact checkout.
 `--ref=vX.Y.Z` or a full 40-character commit explicitly selects another compatible
 version. A tag can be moved by a repository maintainer; use a reviewed full commit
-when immutable selection is required. Older releases without the bootstrap
-contract are rejected. Naming an instance `test` does not select a dev release.
+when immutable selection is required. An explicit `--ref` takes precedence over
+the environment default. Older releases without the bootstrap contract are rejected.
 
 The default destination is `$HOME/vb-tech/instances/prod`. Another name is accepted:
 
