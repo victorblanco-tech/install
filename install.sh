@@ -7,7 +7,7 @@ umask 077
 main() {
 TOKEN="${GITHUB_TOKEN:-}"
 unset GITHUB_TOKEN
-INSTALLER_VERSION="1.2.0"
+INSTALLER_VERSION="1.2.1"
 PLATFORM_REF="v0.26.1"
 REPO="victorblanco-tech/ai-assistant"
 INSTANCE_NAME="prod"
@@ -17,10 +17,18 @@ SYSTEM_ARGS=()
 INSTANCE_SET=0
 STAGING=""
 
+printf '\n'
+printf '%s\n' \
+  '+--------------------------------------+' \
+  '|          VB TECH PLATFORM             |' \
+  '|              Installer               |' \
+  '+--------------------------------------+'
+printf '  Installer %s\n\n' "$INSTALLER_VERSION"
+
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 usage() {
   printf '%s\n' \
-    'VB Tech installer 1.2.0 (macOS, fresh installations only)' \
+    'VB Tech installer 1.2.1 (macOS, fresh installations only)' \
     'Usage: bash install.sh [INSTANCE] [--check] [--ref=vX.Y.Z|40-character-commit]' \
     '       [--owner-email=EMAIL] [--system-env=PUBLIC_KEY=value] ...' \
     'Default: prod, platform v0.26.1. Instance names do not select a development branch.' \
@@ -44,15 +52,36 @@ done
 [[ "$INSTANCE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail "Invalid instance name"
 [[ "$PLATFORM_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$PLATFORM_REF" =~ ^[0-9a-f]{40}$ ]] \
   || fail "Select a stable tag or full commit, not a moving branch"
-[ "$(uname -s)" = Darwin ] || fail "This installer supports macOS only"
-[ "$(id -u)" != 0 ] || fail "Run as your normal user, not sudo/root"
+printf 'Checking prerequisites...\n'
+missing=0
+needs() { printf '  [!] %s\n' "$*"; missing=1; }
+[ "$(uname -s)" = Darwin ] || needs "This installer supports macOS only."
+[ "$(id -u)" != 0 ] || needs "Run as your normal user, not sudo/root."
 for tool in git python3 node docker; do
-  command -v "$tool" >/dev/null || fail "Missing prerequisite: $tool"
+  if command -v "$tool" >/dev/null; then
+    printf '  [OK] %s found\n' "$tool"
+  else
+    case "$tool" in
+      git) needs "Git missing. Install the Apple Command Line Tools: xcode-select --install" ;;
+      python3) needs "Python 3 missing. Install Python 3: https://www.python.org/downloads/macos/" ;;
+      node) needs "Node.js missing. Install Node.js 22 or newer: https://nodejs.org/" ;;
+      docker) needs "Docker missing. Install and start Docker Desktop: https://www.docker.com/products/docker-desktop/" ;;
+    esac
+  fi
 done
-node -e 'if(Number(process.versions.node.split(".")[0])<22)process.exit(1)' \
-  || fail "Node.js 22 or newer is required"
-docker info >/dev/null 2>&1 || fail "Start Docker Desktop first"
-docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required"
+if command -v node >/dev/null; then
+  node -e 'if(Number(process.versions.node.split(".")[0])<22)process.exit(1)' \
+    || needs "Node.js 22 or newer is required. Update Node.js before continuing."
+fi
+if command -v docker >/dev/null; then
+  docker info >/dev/null 2>&1 || needs "Docker is not ready. Start Docker Desktop and wait until it is running."
+  docker compose version >/dev/null 2>&1 || needs "Docker Compose v2 is required. Check your Docker Desktop installation."
+fi
+if [ "$missing" = 1 ]; then
+  printf '\nSetup has not started. Resolve the items above, then run this command again.\n'
+  printf 'No files, services or settings have been changed.\n\n'
+  exit 1
+fi
 
 VB_ROOT="${VB_ROOT:-$HOME/vb-tech}"
 export VB_ROOT

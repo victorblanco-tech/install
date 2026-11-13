@@ -262,9 +262,28 @@ os.execv({GIT!r},[{GIT!r},*args])
         self.assertEqual(rc, 0, output)
 
     def test_docker_unavailable_no_changes(self):
-        rc, _ = self.invoke(tty=False, env={'DOCKER_RC': '1'})
+        rc, output = self.invoke(tty=False, env={'DOCKER_RC': '1'})
         self.assertNotEqual(rc, 0)
+        self.assertLess(output.index('VB TECH PLATFORM'), output.index('Docker is not ready'))
+        self.assertIn('Setup has not started', output)
         self.assertFalse((self.root / 'platform').exists())
+
+    def test_banner_and_all_missing_tools_before_exit(self):
+        (self.bin / 'docker').unlink()
+        (self.bin / 'node').unlink()
+        rc, output = self.invoke(tty=False, env={'PATH': str(self.bin)})
+        self.assertNotEqual(rc, 0)
+        for message in ['Python 3 missing', 'Node.js missing', 'Docker missing']:
+            self.assertIn(message, output)
+            self.assertLess(output.index('VB TECH PLATFORM'), output.index(message))
+        self.assertIn('https://www.docker.com/products/docker-desktop/', output)
+        self.assertIn('No files, services or settings have been changed', output)
+        self.assertFalse((self.root / 'platform').exists())
+
+    def test_help_also_starts_with_banner(self):
+        rc, output = self.invoke(['--help'], tty=False)
+        self.assertEqual(rc, 0)
+        self.assertLess(output.index('VB TECH PLATFORM'), output.index('Usage:'))
 
     def test_truncated_script_does_not_execute(self):
         result = subprocess.run(['/bin/bash'], input=SCRIPT.read_text()[:SCRIPT.read_text().rfind('}')],

@@ -34,6 +34,9 @@ bash install-vbtech.sh
 
 `--check` is local and read-only. It does not test repository access, Cloudflare
 or a complete installation. A new destination must not exist yet.
+The installer always opens with its banner, then lists missing prerequisites
+together with next steps. Missing requirements stop setup without changing files
+or services; install them yourself and run the command again.
 
 The shorter interactive command is:
 
